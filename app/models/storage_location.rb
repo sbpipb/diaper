@@ -226,17 +226,55 @@ class StorageLocation < ApplicationRecord
     ActiveRecord::Base.transaction do
       distribution.line_items.each do |line_item|
         inventory_item = inventory_items.find_by(item: line_item.item)
-        inventory_item.update(quantity: inventory_item.quantity + line_item.quantity)
+        inventory_item.update!(quantity: inventory_item.quantity + line_item.quantity)
       end
+      distribution.destroy!
     end
   end
 
   def update_distribution!(distribution, new_distribution_params)
     ActiveRecord::Base.transaction do
-      reclaim! distribution
-      distribution.line_items.destroy_all
+      #this code is essentially
+      #reclaim! distribution
+      #distribution.update! new_distribution_params
+      #distribute! distribution
+      #but not DRY to avoid the trap of nested errors here: https://api.rubyonrails.org/classes/ActiveRecord/Transactions/ClassMethods.html#module-ActiveRecord::Transactions::ClassMethods-label-Nested+transactions
+
+      distribution.line_items.each do |line_item|
+        inventory_item = inventory_items.find_by(item: line_item.item)
+        inventory_item.update!(quantity: inventory_item.quantity + line_item.quantity)
+        line_item.update!(quantity: 0)
+      end
+
       distribution.update! new_distribution_params
-      distribute! distribution
+
+          updated_quantities = {}
+      insufficient_items = []
+      distribution.line_items.each do |line_item|
+        inventory_item = inventory_items.find_by(item: line_item.item)
+        next if inventory_item.nil?
+        if inventory_item.quantity >= line_item.quantity
+          updated_quantities[inventory_item.id] = (updated_quantities[inventory_item.id] ||
+                                                 inventory_item.quantity) - line_item.quantity
+        else
+          insufficient_items << {
+            item_id: line_item.item.id,
+            item_name: line_item.item.name,
+            quantity_on_hand: inventory_item.quantity,
+            quantity_requested: line_item.quantity
+          }
+        end
+      end
+
+    unless insufficient_items.empty?
+      raise Errors::InsufficientAllotment.new(
+        "Distribution line_items exceed the available inventory",
+        insufficient_items
+      )
+    end
+    records.each do |inventory_item_id, quantity|
+        InventoryItem.find(inventory_item_id).update(quantity: quantity)
+      end
     end
   end
 
