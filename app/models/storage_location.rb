@@ -234,24 +234,22 @@ class StorageLocation < ApplicationRecord
 
   def update_distribution!(distribution, new_distribution_params)
     ActiveRecord::Base.transaction do
-      #this code is essentially
-      #reclaim! distribution
-      #distribution.update! new_distribution_params
-      #distribute! distribution
-      #but not DRY to avoid the trap of nested errors here: https://api.rubyonrails.org/classes/ActiveRecord/Transactions/ClassMethods.html#module-ActiveRecord::Transactions::ClassMethods-label-Nested+transactions
-
+      distribution.line_items.combine!
       distribution.line_items.each do |line_item|
-        inventory_item = inventory_items.find_by(item: line_item.item)
+        inventory_item = inventory_items.find(item: line_item.item.id)
         inventory_item.update!(quantity: inventory_item.quantity + line_item.quantity)
-        line_item.update!(quantity: 0)
+      end
+      
+      distribution.line_items.each do |line_item|
+        line_item.destroy!
       end
 
       distribution.update! new_distribution_params
 
-          updated_quantities = {}
+      updated_quantities = {}
       insufficient_items = []
       distribution.line_items.each do |line_item|
-        inventory_item = inventory_items.find_by(item: line_item.item)
+        inventory_item = inventory_items.find_or_create_by!(item: line_item.item)
         next if inventory_item.nil?
         if inventory_item.quantity >= line_item.quantity
           updated_quantities[inventory_item.id] = (updated_quantities[inventory_item.id] ||
@@ -272,8 +270,8 @@ class StorageLocation < ApplicationRecord
         insufficient_items
       )
     end
-    records.each do |inventory_item_id, quantity|
-        InventoryItem.find(inventory_item_id).update(quantity: quantity)
+    updated_quantities.each do |inventory_item_id, quantity|
+        InventoryItem.find(inventory_item_id).update!(quantity: quantity)
       end
     end
   end
@@ -291,7 +289,7 @@ class StorageLocation < ApplicationRecord
   def update_inventory_inventory_items(records)
     ActiveRecord::Base.transaction do
       records.each do |inventory_item_id, quantity|
-        InventoryItem.find(inventory_item_id).update(quantity: quantity)
+        InventoryItem.find(inventory_item_id).update!(quantity: quantity)
       end
     end
   end
